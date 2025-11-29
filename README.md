@@ -15,7 +15,7 @@ A production-ready data engineering pipeline that ingests raw Olist e-commerce d
 
 
 
-![Architecture](app\docs\project-architechture.png)
+![Architecture](https://github.com/Subhajit1947/Olist-E-Commerce-Analytics-Pipeline/blob/main/app/docs/project-architechture.png)
 
 ---
 
@@ -192,10 +192,6 @@ docker-compose down -v
 docker-compose up -d
 ```
 
-### Test S3 Connectivity
-```bash
-docker exec spark-master python3 -c "import boto3; print(boto3.client('s3').list_buckets())"
-```
 
 
 ## 👨‍💻 Author
