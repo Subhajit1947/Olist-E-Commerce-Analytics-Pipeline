@@ -1,0 +1,5 @@
+app/airflow/logs
+app/airflow/plugins
+app/.env
+Makefile
+__pycache__

@@ -1,0 +1,173 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    networks:
+      - etl-network
+
+  airflow-init:
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    container_name: airflow-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+      - PYTHONPATH=/opt/airflow/dags:/opt/airflow/plugins:/opt/app/spark_etl
+    command: >
+      bash -c "
+        airflow db init &&
+        airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin
+      "
+    volumes:
+      - ./app/airflow/dags:/opt/airflow/dags
+      - ./app/airflow/logs:/opt/airflow/logs
+      - ./app/airflow/plugins:/opt/airflow/plugins
+      - ./app/spark_etl:/opt/app/spark_etl
+      - ./app/data:/opt/app/data
+      - ./app/.env:/opt/app/.env
+    user: "50000:0"
+    networks:
+      - etl-network
+
+  airflow-webserver:
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    container_name: airflow-webserver
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+      - PYTHONPATH=/opt/airflow/dags:/opt/airflow/plugins:/opt/app/spark_etl
+      - JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+    volumes:
+      - ./app/airflow/dags:/opt/airflow/dags
+      - ./app/airflow/logs:/opt/airflow/logs
+      - ./app/airflow/plugins:/opt/airflow/plugins
+      - ./app/spark_etl:/opt/app/spark_etl
+      - ./app/data:/opt/app/data
+      - ./app/.env:/opt/app/.env
+    ports:
+      - "8080:8080"
+    command: webserver
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    user: "50000:0"
+    networks:
+      - etl-network
+
+  airflow-scheduler:
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    container_name: airflow-scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+      - PYTHONPATH=/opt/airflow/dags:/opt/airflow/plugins:/opt/app/spark_etl
+      - JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+    volumes:
+      - ./app/airflow/dags:/opt/airflow/dags
+      - ./app/airflow/logs:/opt/airflow/logs
+      - ./app/airflow/plugins:/opt/airflow/plugins
+      - ./app/spark_etl:/opt/app/spark_etl
+      - ./app/data:/opt/app/data
+      - ./app/snowflake:/opt/app/snowflake
+      - ./app/.env:/opt/app/.env
+    command: scheduler
+    user: "50000:0"
+    networks:
+      - etl-network
+
+  spark-master:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    container_name: spark-master
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+      --host spark-master
+      --port 7077
+      --webui-port 8080
+    ports:
+      - "8081:8080"
+      - "7077:7077"
+    environment:
+      - SPARK_LOCAL_IP=spark-master
+      - PYTHONPATH=/opt/app/spark_etl
+      - SPARK_JARS_PACKAGES=org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262
+      - HOME=/home/spark
+    volumes:
+      - ./app/spark_etl:/opt/app/spark_etl
+      - ./app/data:/opt/app/data
+      - ./app/.env:/opt/app/.env
+    networks:
+      - etl-network
+
+  spark-worker:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    container_name: spark-worker
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
+      spark://spark-master:7077
+      --cores 2
+      --memory 2g
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_LOCAL_IP=spark-worker
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2g
+      - PYTHONPATH=/opt/app/spark_etl
+      - SPARK_JARS_PACKAGES=org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262
+      - HOME=/home/spark
+    volumes:
+      - ./app/spark_etl:/opt/app/spark_etl
+      - ./app/data:/opt/app/data
+      - ./app/.env:/opt/app/.env
+    networks:
+      - etl-network
+
+networks:
+  etl-network:
+    driver: bridge
+
+volumes:
+  postgres-db-volume:
